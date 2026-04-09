@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card">
+  <div class="title-row">
+    <h2>Alarm history</h2>
+    <div class="actions-inline wrap">
+      <a class="filter-link" href="{{ url_for('history', status='all') }}">All</a>
+      <a class="filter-link" href="{{ url_for('history', status='ACTIVE') }}">Active</a>
+      <a class="filter-link" href="{{ url_for('history', status='ACK') }}">Acknowledged</a>
+      <a class="filter-link" href="{{ url_for('history', status='RESOLVED') }}">Resolved</a>
+    </div>
+  </div>
+  <div class="history-list">
+    {% for alarm in alarms %}
+      <div class="history-row">
+        <div>
+          <strong>#{{ alarm['id'] }} · {{ alarm['status'] }} · {{ alarm['cpc_name'] or alarm['source'] }}</strong>
+          <p>{{ alarm['message'] }}</p>
+        </div>
+        <div class="actions-inline wrap end">
+          <small>{{ alarm['created_at'] }}</small>
+          <button class="danger delete-btn" data-id="{{ alarm['id'] }}">Delete</button>
+        </div>
+      </div>
+    {% else %}
+      <p>No alarms yet.</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', async () => {
+  if (!confirm('Delete this alarm permanently?')) return;
+  await fetch(`/api/alarm/${btn.dataset.id}/delete`, {method:'POST'});
+  location.reload();
+}));
+</script>
+{% endblock %}

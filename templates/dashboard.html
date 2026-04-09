@@ -1,0 +1,184 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="stats-grid">
+  <div class="stat"><span>Active</span><strong>{{ stats.active or 0 }}</strong></div>
+  <div class="stat"><span>Acknowledged</span><strong>{{ stats.ack or 0 }}</strong></div>
+  <div class="stat"><span>Resolved</span><strong>{{ stats.resolved or 0 }}</strong></div>
+  <div class="stat"><span>Total</span><strong>{{ stats.total or 0 }}</strong></div>
+</section>
+
+<section class="toolbar">
+  <button id="btn-test">Generate test alarm</button>
+  <button id="btn-enable-notifications">Enable notifications</button>
+  <button id="btn-bridge-reconnect">Reconnect all</button>
+  <button class="danger" id="btn-delete-resolved">Delete resolved</button>
+  <button class="danger" id="btn-delete-history">Delete history</button>
+  <button class="danger" id="btn-delete-all">Delete total</button>
+</section>
+
+<section class="grid-two">
+  <div class="card">
+    <h2>CPC connections</h2>
+    <div class="history-list" id="bridges-list">
+      {% for bridge in bridges %}
+      <div class="history-row">
+        <div>
+          <strong>{{ bridge['name'] }}</strong>
+          <p>{{ bridge['host'] }}:{{ bridge['port'] }}{% if current_user['is_admin'] %} · {{ bridge['owner_username'] }}{% endif %}</p>
+          <small>Last error: {{ bridge['last_error'] or 'No error' }}</small>
+        </div>
+        <small>{{ 'Connected' if bridge['connected'] else ('Trying' if bridge['running'] else 'Stopped') }}</small>
+      </div>
+      {% else %}
+      <p>No CPC connections yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card">
+    <h2>Recent raw events</h2>
+    <div class="history-list">
+      {% for item in raw_recent %}
+      <div class="history-row">
+        <div>
+          <strong>{{ item['cpc_name'] or item['source'] }}</strong>
+          <p>{{ item['payload'][:150] }}{% if item['payload']|length > 150 %}...{% endif %}</p>
+        </div>
+        <small>{{ item['created_at'] }}</small>
+      </div>
+      {% else %}
+      <p>No raw events yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid-two">
+  <div class="card">
+    <h2>Active alarms</h2>
+    {% if active %}
+      <div class="alarm-list">
+      {% for alarm in active %}
+        <div class="alarm priority-{{ alarm['priority']|lower }}">
+          <div class="alarm-header">
+            <strong>#{{ alarm['id'] }} · {{ alarm['priority'] }} · {{ alarm['cpc_name'] or alarm['source'] }}</strong>
+            <small>{{ alarm['created_at'] }}</small>
+          </div>
+          <p>{{ alarm['message'] }}</p>
+          <div class="actions">
+            <button class="ack-btn" data-id="{{ alarm['id'] }}">Acknowledge</button>
+            <button class="resolve-btn" data-id="{{ alarm['id'] }}">Resolve</button>
+            <button class="danger delete-btn" data-id="{{ alarm['id'] }}">Delete</button>
+          </div>
+        </div>
+      {% endfor %}
+      </div>
+    {% else %}
+      <p>No active alarms.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Latest alarms</h2>
+    <div class="history-list">
+      {% for alarm in recent %}
+      <div class="history-row">
+        <div>
+          <strong>#{{ alarm['id'] }} · {{ alarm['status'] }} · {{ alarm['cpc_name'] or alarm['source'] }}</strong>
+          <p>{{ alarm['message'] }}</p>
+        </div>
+        <small>{{ alarm['created_at'] }}</small>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let lastSeenId = 0;
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function refreshAlarms(notify=true) {
+  const res = await fetch('/api/alarms');
+  const alarms = await res.json();
+  if (alarms.length && alarms[0].id > lastSeenId) {
+    const newest = alarms[0];
+    if (notify && Notification.permission === 'granted') {
+      navigator.serviceWorker?.controller?.postMessage({type:'notify', title:'New CPC alarm', body:newest.message});
+      new Notification('New CPC alarm', { body: newest.message });
+    }
+    lastSeenId = alarms[0].id;
+  }
+}
+
+async function refreshBridges() {
+  const res = await fetch('/api/bridges/status');
+  const bridges = await res.json();
+  const host = document.getElementById('bridges-list');
+  if (!host) return;
+  host.innerHTML = bridges.length ? bridges.map(b => `
+    <div class="history-row">
+      <div>
+        <strong>${b.name}</strong>
+        <p>${b.host}:${b.port}${b.owner_username ? ' · ' + b.owner_username : ''}</p>
+        <small>Last error: ${b.last_error || 'No error'}</small>
+      </div>
+      <small>${b.connected ? 'Connected' : (b.running ? 'Trying' : 'Stopped')}</small>
+    </div>
+  `).join('') : '<p>No CPC connections yet.</p>';
+}
+
+async function enableNotifications() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    alert('This browser does not support push notifications. You can still receive notifications while the app is open.');
+    return;
+  }
+  const registration = await navigator.serviceWorker.register('/service-worker.js');
+  await Notification.requestPermission();
+  if (Notification.permission !== 'granted') {
+    alert('Notification permission denied.');
+    return;
+  }
+  const vapidRes = await fetch('/api/notifications/vapid-public-key');
+  const vapid = await vapidRes.json();
+  if (!vapid.publicKey) {
+    alert('Notifications are enabled in the browser. For background notifications on phone and PC, publish the app with HTTPS and configure VAPID keys.');
+    return;
+  }
+  const sub = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(vapid.publicKey) });
+  await fetch('/api/notifications/subscribe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub) });
+  alert('Notifications enabled.');
+}
+
+async function deleteBulk(mode) {
+  if (!confirm(`Delete ${mode} alarms?`)) return;
+  await fetch('/api/alarms/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode})});
+  location.reload();
+}
+
+setInterval(() => refreshAlarms(true), 8000);
+setInterval(refreshBridges, 5000);
+refreshAlarms(false);
+refreshBridges();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+
+document.getElementById('btn-enable-notifications')?.addEventListener('click', enableNotifications);
+document.getElementById('btn-test')?.addEventListener('click', async () => { await fetch('/api/alarm/test', {method:'POST'}); location.reload(); });
+document.getElementById('btn-bridge-reconnect')?.addEventListener('click', async () => { await fetch('/api/bridges/reconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({})}); setTimeout(refreshBridges, 1000); });
+document.getElementById('btn-delete-resolved')?.addEventListener('click', () => deleteBulk('resolved'));
+document.getElementById('btn-delete-history')?.addEventListener('click', () => deleteBulk('history'));
+document.getElementById('btn-delete-all')?.addEventListener('click', () => deleteBulk('all'));
+document.querySelectorAll('.ack-btn').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/alarm/${btn.dataset.id}/ack`, {method:'POST'}); location.reload(); }));
+document.querySelectorAll('.resolve-btn').forEach(btn => btn.addEventListener('click', async () => { await fetch(`/api/alarm/${btn.dataset.id}/resolve`, {method:'POST'}); location.reload(); }));
+document.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', async () => { if (!confirm('Delete this alarm permanently?')) return; await fetch(`/api/alarm/${btn.dataset.id}/delete`, {method:'POST'}); location.reload(); }));
+</script>
+{% endblock %}

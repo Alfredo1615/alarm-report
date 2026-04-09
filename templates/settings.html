@@ -1,0 +1,159 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="grid-two">
+  <div class="card">
+    <h2>General settings</h2>
+    {% if user['is_admin'] %}
+    <form method="post" class="stack-form">
+      <label>Business name</label>
+      <input name="company_name" value="{{ settings.get('company_name','') }}">
+      <label>Public server URL</label>
+      <input name="public_base_url" placeholder="https://your-domain.com" value="{{ settings.get('public_base_url','') }}">
+      <label>Browser notifications</label>
+      <select name="notify_browser">
+        <option value="1" {% if settings.get('notify_browser') == '1' %}selected{% endif %}>Enabled</option>
+        <option value="0" {% if settings.get('notify_browser') == '0' %}selected{% endif %}>Disabled</option>
+      </select>
+      <label>Theme</label>
+      <select name="theme">
+        <option value="dark" {% if settings.get('theme') == 'dark' %}selected{% endif %}>Dark</option>
+        <option value="light" {% if settings.get('theme') == 'light' %}selected{% endif %}>Light</option>
+      </select>
+      <button type="submit">Save settings</button>
+    </form>
+    {% else %}
+    <p>Only the administrator can change global settings.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>My account</h2>
+    <form method="post" action="{{ url_for('update_account') }}" class="stack-form">
+      <label>Username</label>
+      <input name="username" value="{{ user['username'] }}">
+      <label>Phone number for SMS</label>
+      <input name="phone_number" placeholder="+13055550123" value="{{ user['phone_number'] or '' }}">
+      <label>Receive SMS alarms</label>
+      <select name="sms_enabled">
+        <option value="0" {% if not user['sms_enabled'] %}selected{% endif %}>Disabled</option>
+        <option value="1" {% if user['sms_enabled'] %}selected{% endif %}>Enabled</option>
+      </select>
+      <label>Current password</label>
+      <input type="password" name="current_password">
+      <label>New password</label>
+      <input type="password" name="new_password">
+      <label>Confirm new password</label>
+      <input type="password" name="confirm_password">
+      <button type="submit">Save account</button>
+    </form>
+  </div>
+</section>
+
+{% if user['is_admin'] %}
+<div class="card" style="margin-top:16px;">
+  <h2>Users</h2>
+  <form method="post" action="{{ url_for('add_user') }}" class="stack-form compact-grid">
+    <div><label>Username</label><input name="username" required></div>
+    <div><label>Password</label><input type="password" name="password" required></div>
+    <div><label>Role</label><select name="is_admin"><option value="0">User</option><option value="1">Administrator</option></select></div>
+    <div class="full-row"><button type="submit">Create user</button></div>
+  </form>
+  <div class="history-list" style="margin-top:12px;">
+    {% for row in users %}
+      <div class="history-row">
+        <div>
+          <strong>{{ row['username'] }}</strong>
+          <p>{{ 'Administrator' if row['is_admin'] else 'User' }} · {{ cpc_counts.get(row['id'], 0) }}/{{ max_cpcs_per_user }} CPCs</p>
+        </div>
+        <div class="actions-inline end">
+          <small>{{ row['created_at'] }}</small>
+          {% if row['id'] != user['id'] %}
+          <form method="post" action="{{ url_for('delete_user', user_id=row['id']) }}" onsubmit="return confirm('Delete this user and all their CPCs and alarms?');">
+            <button type="submit" class="danger">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:16px;">
+  <h2>Add CPC / E2</h2>
+  <form method="post" action="{{ url_for('add_cpc') }}" class="stack-form compact-grid">
+    {% if user['is_admin'] %}
+    <div>
+      <label>Assign to user</label>
+      <select name="user_id">
+        {% for row in users %}
+        <option value="{{ row['id'] }}">{{ row['username'] }} ({{ cpc_counts.get(row['id'], 0) }}/{{ max_cpcs_per_user }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div><label>Name</label><input name="name" required placeholder="Rack 1"></div>
+    <div><label>IP or host</label><input name="host" required placeholder="10.0.0.26"></div>
+    <div><label>Port</label><input name="port" value="14106"></div>
+    <div><label>Timeout</label><input name="timeout" value="15"></div>
+    <div><label>Buffer mode</label>
+      <select name="buffer_mode"><option value="line">Line</option><option value="block">Block</option></select>
+    </div>
+    <div><label>Parser</label>
+      <select name="parser_hint"><option value="auto">Auto</option><option value="plain">Plain text</option></select>
+    </div>
+    <div><label>Active</label>
+      <select name="enabled"><option value="1">Yes</option><option value="0">No</option></select>
+    </div>
+    <div class="full-row"><button type="submit">Add CPC</button></div>
+  </form>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>Configured CPCs</h2>
+  <div class="history-list">
+    {% for cpc in cpcs %}
+      <div class="cpc-item">
+        <form method="post" action="{{ url_for('update_cpc', cpc_id=cpc['id']) }}" class="stack-form compact-grid">
+          <div><label>Name</label><input name="name" value="{{ cpc['name'] }}"></div>
+          <div><label>IP or host</label><input name="host" value="{{ cpc['host'] }}"></div>
+          <div><label>Port</label><input name="port" value="{{ cpc['port'] }}"></div>
+          <div><label>Timeout</label><input name="timeout" value="{{ cpc['timeout'] }}"></div>
+          <div><label>Buffer</label>
+            <select name="buffer_mode">
+              <option value="line" {% if cpc['buffer_mode']=='line' %}selected{% endif %}>Line</option>
+              <option value="block" {% if cpc['buffer_mode']=='block' %}selected{% endif %}>Block</option>
+            </select>
+          </div>
+          <div><label>Parser</label>
+            <select name="parser_hint">
+              <option value="auto" {% if cpc['parser_hint']=='auto' %}selected{% endif %}>Auto</option>
+              <option value="plain" {% if cpc['parser_hint']=='plain' %}selected{% endif %}>Plain text</option>
+            </select>
+          </div>
+          <div><label>Active</label>
+            <select name="enabled"><option value="1" {% if cpc['enabled'] %}selected{% endif %}>Yes</option><option value="0" {% if not cpc['enabled'] %}selected{% endif %}>No</option></select>
+          </div>
+          <div class="full-row actions-inline wrap">
+            <button type="submit">Save</button>
+        </form>
+            <form method="post" action="{{ url_for('delete_cpc', cpc_id=cpc['id']) }}" onsubmit="return confirm('Delete this CPC?');">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+          </div>
+          <small>Owner: {{ cpc['owner_username'] }} · Status: {% for bridge in bridges %}{% if bridge['id'] == cpc['id'] %}{{ 'Connected' if bridge['connected'] else ('Trying' if bridge['running'] else 'Stopped') }} · Error: {{ bridge['last_error'] or 'No error' }}{% endif %}{% endfor %}</small>
+      </div>
+    {% else %}
+      <p>No CPCs configured.</p>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>Notes</h2>
+  <p>This version is direct CPC/E2 only.</p>
+  <p>Users are unlimited. Each user can save up to {{ max_cpcs_per_user }} CPC connections.</p>
+  <p>Browser notifications are supported. For background notifications on phone and PC, publish the app with HTTPS and configure VAPID keys.</p>
+  <p>SMS notifications are now supported per user. Each user can save their own phone number in My account. To send SMS automatically, configure Twilio environment variables on your server.</p>
+</div>
+{% endblock %}
