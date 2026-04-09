@@ -31,13 +31,14 @@
     <form method="post" action="{{ url_for('update_account') }}" class="stack-form">
       <label>Username</label>
       <input name="username" value="{{ user['username'] }}">
-      <label>Phone number for SMS</label>
-      <input name="phone_number" placeholder="+13055550123" value="{{ user['phone_number'] or '' }}">
-      <label>Receive SMS alarms</label>
+      <label>SMS phone number</label>
+      <input name="phone_number" value="{{ user['phone_number'] or '' }}" placeholder="+13055550123">
+      <label>SMS alerts</label>
       <select name="sms_enabled">
-        <option value="0" {% if not user['sms_enabled'] %}selected{% endif %}>Disabled</option>
         <option value="1" {% if user['sms_enabled'] %}selected{% endif %}>Enabled</option>
+        <option value="0" {% if not user['sms_enabled'] %}selected{% endif %}>Disabled</option>
       </select>
+      <small>Twilio status: {{ 'ready' if twilio_ready else 'not configured in environment yet' }}</small>
       <label>Current password</label>
       <input type="password" name="current_password">
       <label>New password</label>
@@ -92,16 +93,28 @@
       </select>
     </div>
     {% endif %}
-    <div><label>Name</label><input name="name" required placeholder="Rack 1"></div>
-    <div><label>IP or host</label><input name="host" required placeholder="10.0.0.26"></div>
+    <div><label>Name</label><input name="name" required placeholder="Store E2"></div>
+    <div><label>Mode</label>
+      <select name="role">
+        <option value="client">Client: app connects to CPC/FSD port</option>
+        <option value="listener">Listener: app waits for inbound socket</option>
+      </select>
+    </div>
+    <div><label>IP or host</label><input name="host" required placeholder="10.0.0.26 or 0.0.0.0"></div>
     <div><label>Port</label><input name="port" value="14106"></div>
     <div><label>Timeout</label><input name="timeout" value="15"></div>
     <div><label>Buffer mode</label>
-      <select name="buffer_mode"><option value="line">Line</option><option value="block">Block</option></select>
+      <select name="buffer_mode"><option value="fsd">FSD/Binary</option><option value="line">Line text</option><option value="block">Block text</option></select>
     </div>
     <div><label>Parser</label>
-      <select name="parser_hint"><option value="auto">Auto</option><option value="plain">Plain text</option></select>
+      <select name="parser_hint"><option value="fsd_auto">FSD auto</option><option value="plain">Plain text</option></select>
     </div>
+    <div><label>Startup hex (optional)</label><input name="startup_hex" placeholder="010203A0"></div>
+    <div><label>Heartbeat hex (optional)</label><input name="heartbeat_hex" placeholder="00FF10"></div>
+    <div><label>Heartbeat seconds</label><input name="heartbeat_interval" value="30"></div>
+    <div><label>Scan hex</label><input name="scan_hex" placeholder="A1B2C3..."></div>
+    <div><label>Scan read seconds</label><input name="scan_read_seconds" value="4"></div>
+    <div><label>Auto scan on connect</label><select name="auto_scan_on_connect"><option value="0">No</option><option value="1">Yes</option></select></div>
     <div><label>Active</label>
       <select name="enabled"><option value="1">Yes</option><option value="0">No</option></select>
     </div>
@@ -116,32 +129,48 @@
       <div class="cpc-item">
         <form method="post" action="{{ url_for('update_cpc', cpc_id=cpc['id']) }}" class="stack-form compact-grid">
           <div><label>Name</label><input name="name" value="{{ cpc['name'] }}"></div>
+          <div><label>Mode</label>
+            <select name="role">
+              <option value="client" {% if cpc['role']=='client' %}selected{% endif %}>Client</option>
+              <option value="listener" {% if cpc['role']=='listener' %}selected{% endif %}>Listener</option>
+            </select>
+          </div>
           <div><label>IP or host</label><input name="host" value="{{ cpc['host'] }}"></div>
           <div><label>Port</label><input name="port" value="{{ cpc['port'] }}"></div>
           <div><label>Timeout</label><input name="timeout" value="{{ cpc['timeout'] }}"></div>
           <div><label>Buffer</label>
             <select name="buffer_mode">
+              <option value="fsd" {% if cpc['buffer_mode']=='fsd' %}selected{% endif %}>FSD/Binary</option>
               <option value="line" {% if cpc['buffer_mode']=='line' %}selected{% endif %}>Line</option>
               <option value="block" {% if cpc['buffer_mode']=='block' %}selected{% endif %}>Block</option>
             </select>
           </div>
           <div><label>Parser</label>
             <select name="parser_hint">
-              <option value="auto" {% if cpc['parser_hint']=='auto' %}selected{% endif %}>Auto</option>
+              <option value="fsd_auto" {% if cpc['parser_hint']=='fsd_auto' %}selected{% endif %}>FSD auto</option>
               <option value="plain" {% if cpc['parser_hint']=='plain' %}selected{% endif %}>Plain text</option>
             </select>
           </div>
+          <div><label>Startup hex</label><input name="startup_hex" value="{{ cpc['startup_hex'] or '' }}"></div>
+          <div><label>Heartbeat hex</label><input name="heartbeat_hex" value="{{ cpc['heartbeat_hex'] or '' }}"></div>
+          <div><label>Heartbeat seconds</label><input name="heartbeat_interval" value="{{ cpc['heartbeat_interval'] or 30 }}"></div>
+          <div><label>Scan hex</label><input name="scan_hex" value="{{ cpc['scan_hex'] or '' }}"></div>
+          <div><label>Scan read seconds</label><input name="scan_read_seconds" value="{{ cpc['scan_read_seconds'] or 4 }}"></div>
+          <div><label>Auto scan on connect</label><select name="auto_scan_on_connect"><option value="0" {% if not cpc['auto_scan_on_connect'] %}selected{% endif %}>No</option><option value="1" {% if cpc['auto_scan_on_connect'] %}selected{% endif %}>Yes</option></select></div>
           <div><label>Active</label>
             <select name="enabled"><option value="1" {% if cpc['enabled'] %}selected{% endif %}>Yes</option><option value="0" {% if not cpc['enabled'] %}selected{% endif %}>No</option></select>
           </div>
           <div class="full-row actions-inline wrap">
             <button type="submit">Save</button>
         </form>
+            <form method="post" action="{{ url_for('scan_cpc', cpc_id=cpc['id']) }}">
+              <button type="submit">Scan now</button>
+            </form>
             <form method="post" action="{{ url_for('delete_cpc', cpc_id=cpc['id']) }}" onsubmit="return confirm('Delete this CPC?');">
               <button type="submit" class="danger">Delete</button>
             </form>
           </div>
-          <small>Owner: {{ cpc['owner_username'] }} · Status: {% for bridge in bridges %}{% if bridge['id'] == cpc['id'] %}{{ 'Connected' if bridge['connected'] else ('Trying' if bridge['running'] else 'Stopped') }} · Error: {{ bridge['last_error'] or 'No error' }}{% endif %}{% endfor %}</small>
+          <small>Owner: {{ cpc['owner_username'] }} · Status: {% for bridge in bridges %}{% if bridge['id'] == cpc['id'] %}{{ 'Connected' if bridge['connected'] else ('Trying' if bridge['running'] else 'Stopped') }} · Last error: {{ bridge['last_error'] or 'No error' }}{% endif %}{% endfor %}</small>
       </div>
     {% else %}
       <p>No CPCs configured.</p>
@@ -151,9 +180,8 @@
 
 <div class="card" style="margin-top:16px;">
   <h2>Notes</h2>
-  <p>This version is direct CPC/E2 only.</p>
+  <p>This version adds direct FSD/TCP modes, raw frame capture, optional startup/heartbeat hex frames, on-demand scan requests, SMS support with Twilio, and app icons.</p>
+  <p>FSD decoding is heuristic. If your CPC sends proprietary binary frames, the app will save the raw hex and printable text so you can refine it later.</p>
   <p>Users are unlimited. Each user can save up to {{ max_cpcs_per_user }} CPC connections.</p>
-  <p>Browser notifications are supported. For background notifications on phone and PC, publish the app with HTTPS and configure VAPID keys.</p>
-  <p>SMS notifications are now supported per user. Each user can save their own phone number in My account. To send SMS automatically, configure Twilio environment variables on your server.</p>
 </div>
 {% endblock %}
