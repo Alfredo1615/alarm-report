@@ -96,7 +96,7 @@
     <div><label>Name</label><input name="name" required placeholder="Store E2"></div>
     <div><label>Mode</label>
       <select name="role">
-        <option value="client">Client: app connects to CPC/FSD port</option>
+        <option value="client">Client: app enters the CPC and searches for alarms</option>
         <option value="listener">Listener: app waits for inbound socket</option>
       </select>
     </div>
@@ -112,9 +112,13 @@
     <div><label>Startup hex (optional)</label><input name="startup_hex" placeholder="010203A0"></div>
     <div><label>Heartbeat hex (optional)</label><input name="heartbeat_hex" placeholder="00FF10"></div>
     <div><label>Heartbeat seconds</label><input name="heartbeat_interval" value="30"></div>
-    <div><label>Scan hex</label><input name="scan_hex" placeholder="A1B2C3..."></div>
-    <div><label>Scan read seconds</label><input name="scan_read_seconds" value="4"></div>
-    <div><label>Auto scan on connect</label><select name="auto_scan_on_connect"><option value="0">No</option><option value="1">Yes</option></select></div>
+    <div><label>Scan hex (optional)</label><input name="scan_hex" placeholder="Optional direct poll command"></div>
+    <div><label>Sync listen seconds</label><input name="scan_read_seconds" value="6"></div>
+    <div><label>Auto crawl after connect</label><select name="crawl_mode"><option value="1" selected>Yes</option><option value="0">No</option></select></div>
+    <div><label>Crawl every seconds</label><input name="crawl_interval" value="45"></div>
+    <div class="full-row"><label>Crawl payloads (optional, one per line; hex like 05 or text like alarms)</label><textarea name="crawl_payloads" rows="5" placeholder="Leave blank to use the built-in exploratory probe list"></textarea></div>
+
+    <div><label>Auto sync on connect</label><select name="auto_scan_on_connect"><option value="0">No</option><option value="1" selected>Yes</option></select></div>
     <div><label>Active</label>
       <select name="enabled"><option value="1">Yes</option><option value="0">No</option></select>
     </div>
@@ -154,9 +158,13 @@
           <div><label>Startup hex</label><input name="startup_hex" value="{{ cpc['startup_hex'] or '' }}"></div>
           <div><label>Heartbeat hex</label><input name="heartbeat_hex" value="{{ cpc['heartbeat_hex'] or '' }}"></div>
           <div><label>Heartbeat seconds</label><input name="heartbeat_interval" value="{{ cpc['heartbeat_interval'] or 30 }}"></div>
-          <div><label>Scan hex</label><input name="scan_hex" value="{{ cpc['scan_hex'] or '' }}"></div>
-          <div><label>Scan read seconds</label><input name="scan_read_seconds" value="{{ cpc['scan_read_seconds'] or 4 }}"></div>
-          <div><label>Auto scan on connect</label><select name="auto_scan_on_connect"><option value="0" {% if not cpc['auto_scan_on_connect'] %}selected{% endif %}>No</option><option value="1" {% if cpc['auto_scan_on_connect'] %}selected{% endif %}>Yes</option></select></div>
+          <div><label>Scan hex (optional)</label><input name="scan_hex" value="{{ cpc['scan_hex'] or '' }}" placeholder="Optional direct poll command"></div>
+          <div><label>Sync listen seconds</label><input name="scan_read_seconds" value="{{ cpc['scan_read_seconds'] or 6 }}"></div>
+          <div><label>Auto crawl</label><select name="crawl_mode"><option value="1" {% if cpc['crawl_mode'] %}selected{% endif %}>Yes</option><option value="0" {% if not cpc['crawl_mode'] %}selected{% endif %}>No</option></select></div>
+          <div><label>Crawl every seconds</label><input name="crawl_interval" value="{{ cpc['crawl_interval'] or 45 }}"></div>
+          <div class="full-row"><label>Crawl payloads (optional, one per line)</label><textarea name="crawl_payloads" rows="5" placeholder="Blank = built-in exploratory probes">{{ cpc['crawl_payloads'] or '' }}</textarea></div>
+
+          <div><label>Auto sync on connect</label><select name="auto_scan_on_connect"><option value="0" {% if not cpc['auto_scan_on_connect'] %}selected{% endif %}>No</option><option value="1" {% if cpc['auto_scan_on_connect'] %}selected{% endif %}>Yes</option></select></div>
           <div><label>Active</label>
             <select name="enabled"><option value="1" {% if cpc['enabled'] %}selected{% endif %}>Yes</option><option value="0" {% if not cpc['enabled'] %}selected{% endif %}>No</option></select>
           </div>
@@ -164,7 +172,7 @@
             <button type="submit">Save</button>
         </form>
             <form method="post" action="{{ url_for('scan_cpc', cpc_id=cpc['id']) }}">
-              <button type="submit">Scan now</button>
+              <button type="submit">Sync / Crawl now</button>
             </form>
             <form method="post" action="{{ url_for('delete_cpc', cpc_id=cpc['id']) }}" onsubmit="return confirm('Delete this CPC?');">
               <button type="submit" class="danger">Delete</button>
@@ -180,8 +188,8 @@
 
 <div class="card" style="margin-top:16px;">
   <h2>Notes</h2>
-  <p>This version adds direct FSD/TCP modes, raw frame capture, optional startup/heartbeat hex frames, on-demand scan requests, SMS support with Twilio, and app icons.</p>
-  <p>FSD decoding is heuristic. If your CPC sends proprietary binary frames, the app will save the raw hex and printable text so you can refine it later.</p>
+  <p>This version adds a client mode that connects into the CPC, tries to crawl alarms automatically, can use a custom port of your choice, stores raw frames, and reflects readable alarm-like text in the app. You can still override the crawl with your own probe payloads or direct poll hex.</p>
+  <p>The automatic crawl is exploratory. If your CPC answers with proprietary binary frames, the app will still save the raw hex and printable text, but the final alarm decoding may need another tuning pass.</p>
   <p>Users are unlimited. Each user can save up to {{ max_cpcs_per_user }} CPC connections.</p>
 </div>
 {% endblock %}

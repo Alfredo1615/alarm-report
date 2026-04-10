@@ -40,3 +40,6 @@ python app.py
 ```bash
 gunicorn app:app
 ```
+
+
+Updated build: adds CPC client crawl mode with configurable custom port, automatic exploratory probes, and manual Sync/Crawl button.

@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="stats-grid">
+  <div class="stat"><span>Site</span><strong>{{ cpc['site_label'] or cpc['name'] }}</strong></div>
+  <div class="stat"><span>Host</span><strong>{{ cpc['host'] }}:{{ cpc['port'] }}</strong></div>
+  <div class="stat"><span>Mode</span><strong>{{ cpc['role']|upper }}</strong></div>
+  <div class="stat"><span>Status</span><strong>{{ 'Connected' if bridge and bridge['connected'] else 'Offline' }}</strong></div>
+</section>
+<section class="grid-two">
+  <div class="card">
+    <h2>Site details</h2>
+    <p><strong>Name:</strong> {{ cpc['name'] }}</p>
+    <p><strong>Site label:</strong> {{ cpc['site_label'] or '—' }}</p>
+    <p><strong>Store code:</strong> {{ cpc['store_code'] or '—' }}</p>
+    <p><strong>Parser:</strong> {{ cpc['parser_hint'] }} · {{ cpc['buffer_mode'] }}</p>
+    <p><strong>Notes:</strong> {{ cpc['device_notes'] or 'No notes yet.' }}</p>
+    <p><strong>Last message:</strong> {{ bridge['last_message_at'] if bridge else '—' }}</p>
+    <p><strong>Last error:</strong> {{ bridge['last_error'] if bridge and bridge['last_error'] else 'No error' }}</p>
+    <form method="post" action="{{ url_for('scan_cpc', cpc_id=cpc['id']) }}">
+      <button type="submit">Run scan now</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Recent raw events</h2>
+    <div class="history-list">
+      {% for item in raw_events %}
+      <div class="history-row">
+        <div><pre style="white-space:pre-wrap; margin:0;">{{ item['payload'][:380] }}{% if item['payload']|length > 380 %}...{% endif %}</pre></div>
+        <small>{{ item['created_at'] }}</small>
+      </div>
+      {% else %}
+      <p>No raw events yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+<section class="card" style="margin-top:16px;">
+  <h2>Alarm timeline</h2>
+  <div class="history-list">
+    {% for alarm in alarms %}
+    <div class="history-row">
+      <div>
+        <strong>#{{ alarm['id'] }} · {{ alarm['status'] }} · {{ alarm['priority'] }}</strong>
+        <p>{{ alarm['message'] }}</p>
+      </div>
+      <small>{{ alarm['created_at'] }}</small>
+    </div>
+    {% else %}
+    <p>No alarms for this site yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

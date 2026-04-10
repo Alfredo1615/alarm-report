@@ -37,6 +37,7 @@ TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_FROM_NUMBER = os.environ.get('TWILIO_FROM_NUMBER', '')
 MAX_CPCS_PER_USER = 5
+ALARM_DEDUPE_SECONDS = int(os.environ.get('ALARM_DEDUPE_SECONDS', '180'))
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
@@ -100,6 +101,10 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL DEFAULT 1,
             name TEXT NOT NULL,
+            site_label TEXT DEFAULT '',
+            store_code TEXT DEFAULT '',
+            device_notes TEXT DEFAULT '',
+            scan_every_seconds INTEGER NOT NULL DEFAULT 0,
             host TEXT NOT NULL,
             port INTEGER NOT NULL DEFAULT 14106,
             timeout INTEGER NOT NULL DEFAULT 15,
@@ -112,6 +117,9 @@ def init_db():
             scan_hex TEXT DEFAULT '',
             scan_read_seconds INTEGER NOT NULL DEFAULT 4,
             auto_scan_on_connect INTEGER NOT NULL DEFAULT 0,
+            crawl_mode INTEGER NOT NULL DEFAULT 1,
+            crawl_interval INTEGER NOT NULL DEFAULT 45,
+            crawl_payloads TEXT DEFAULT '',
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -189,6 +197,13 @@ def init_db():
         ('cpcs', 'scan_hex'): "ALTER TABLE cpcs ADD COLUMN scan_hex TEXT DEFAULT ''",
         ('cpcs', 'scan_read_seconds'): 'ALTER TABLE cpcs ADD COLUMN scan_read_seconds INTEGER NOT NULL DEFAULT 4',
         ('cpcs', 'auto_scan_on_connect'): 'ALTER TABLE cpcs ADD COLUMN auto_scan_on_connect INTEGER NOT NULL DEFAULT 0',
+        ('cpcs', 'site_label'): "ALTER TABLE cpcs ADD COLUMN site_label TEXT DEFAULT ''",
+        ('cpcs', 'store_code'): "ALTER TABLE cpcs ADD COLUMN store_code TEXT DEFAULT ''",
+        ('cpcs', 'device_notes'): "ALTER TABLE cpcs ADD COLUMN device_notes TEXT DEFAULT ''",
+        ('cpcs', 'scan_every_seconds'): 'ALTER TABLE cpcs ADD COLUMN scan_every_seconds INTEGER NOT NULL DEFAULT 0',
+        ('cpcs', 'crawl_mode'): "ALTER TABLE cpcs ADD COLUMN crawl_mode INTEGER NOT NULL DEFAULT 1",
+        ('cpcs', 'crawl_interval'): 'ALTER TABLE cpcs ADD COLUMN crawl_interval INTEGER NOT NULL DEFAULT 45',
+        ('cpcs', 'crawl_payloads'): "ALTER TABLE cpcs ADD COLUMN crawl_payloads TEXT DEFAULT ''",
     }
     for (table, column), sql in migrations.items():
         if not column_exists(db, table, column):
@@ -315,6 +330,30 @@ def send_sms_notification(db, user_id: int, site: str, message: str):
         pass
 
 
+def split_alarm_candidates(message: str):
+    text = re.sub(r'\s+', ' ', message or '').strip()
+    if not text:
+        return []
+    parts = re.split(r'\s*(?:\||;|\s{2,})\s*', text)
+    return [p.strip() for p in parts if len(p.strip()) >= 6][:6]
+
+
+def site_display_name(cpc):
+    return (cpc['site_label'] or cpc['name'] or 'CPC').strip()
+
+
+def should_create_alarm(db, user_id: int, cpc_id: Optional[int], message: str):
+    since = time.time() - ALARM_DEDUPE_SECONDS
+    since_iso = datetime.utcfromtimestamp(since).isoformat(timespec='seconds') + 'Z'
+    row = db.execute(
+        """SELECT id FROM alarms WHERE user_id = ? AND COALESCE(cpc_id,0) = COALESCE(?,0)
+           AND message = ? AND status IN ('ACTIVE','ACK') AND created_at >= ?
+           ORDER BY id DESC LIMIT 1""",
+        (user_id, cpc_id, message[:350], since_iso)
+    ).fetchone()
+    return row is None
+
+
 def create_alarm(db, user_id: int, cpc_id: Optional[int], source: str, site: str, message: str, priority='MEDIUM', external_id=None, rack=''):
     now = utc_now()
     try:
@@ -407,18 +446,27 @@ def format_raw_payload(data: bytes) -> str:
 
 def parse_direct_payload(raw_bytes: bytes, parser_hint: str = 'fsd_auto'):
     ascii_parts = extract_ascii_sequences(raw_bytes)
-    candidates = []
-    for part in ascii_parts:
-        upper = part.upper()
-        if any(token in upper for token in ['ALARM', 'FAIL', 'NOTICE', 'ADVISORY', 'TEMP', 'SENSOR', 'DEFROST', 'SUCTION', 'COMP', 'CASE']):
-            candidates.append(part)
-    if not candidates and parser_hint in ('plain', 'plain_text') and ascii_parts:
-        candidates = ascii_parts[:1]
+    joined = ' | '.join(ascii_parts[:10])
+    if not joined and parser_hint not in ('hex_only',):
+        return None
+    upper = joined.upper()
+    hot_words = ['ALARM', 'FAIL', 'FAILED', 'NOTICE', 'ADVISORY', 'TEMP', 'TEMPERATURE', 'SENSOR', 'DEFROST', 'SUCTION', 'COMP', 'COMPRESSOR', 'CASE', 'LOSS', 'DOOR', 'POWER', 'HI ', 'HIGH', 'LOW ', 'LOW', 'DISCHARGE', 'TRIP', 'FAULT', 'CUTOUT', 'CUT OUT', 'PHASE', 'PRESS', 'PRESSURE', 'COND', 'FAN', 'RACK', 'SYS', 'SYSTEM', 'OVERRIDE', 'ALR', 'NOTICES', 'ALARMS']
+    if parser_hint in ('plain', 'plain_text') and ascii_parts:
+        candidates = ascii_parts[:3]
+    else:
+        candidates = [p for p in ascii_parts if any(token in p.upper() for token in hot_words)]
+    if not candidates and any(token in upper for token in hot_words):
+        candidates = [joined]
     if not candidates:
         return None
-    message = re.sub(r'\s+', ' ', ' | '.join(candidates))[:350]
-    priority = 'HIGH' if any(x in message.upper() for x in ['ALARM', 'FAIL', 'CRIT', 'CRITICAL']) else 'MEDIUM'
-    return {'priority': priority, 'message': message}
+    pieces = []
+    for cand in candidates:
+        pieces.extend(split_alarm_candidates(cand))
+    pieces = list(dict.fromkeys(pieces))[:6]
+    if not pieces:
+        return None
+    priority = 'HIGH' if any(x in upper for x in ['ALARM', 'FAIL', 'FAILED', 'CRIT', 'CRITICAL', 'HIGH TEMP', 'LOSS', 'POWER', 'FAULT', 'TRIP', 'CUTOUT']) else 'MEDIUM'
+    return {'priority': priority, 'messages': pieces, 'message': ' | '.join(pieces)[:350]}
 
 
 def increment_message_count(db, cpc_id: int) -> int:
@@ -430,10 +478,13 @@ def increment_message_count(db, cpc_id: int) -> int:
 
 def handle_incoming_bytes(db, cpc, chunk: bytes):
     parsed = parse_direct_payload(chunk, cpc['parser_hint'])
+    display_site = site_display_name(cpc)
     save_raw_event(db, cpc['user_id'], cpc['id'], cpc['name'], format_raw_payload(chunk), 1 if parsed else 0)
     if parsed:
-        external_id = f"{cpc['id']}:{hash(chunk)}"
-        create_alarm(db, cpc['user_id'], cpc['id'], cpc['name'], cpc['name'], parsed['message'], parsed['priority'], external_id=external_id)
+        for piece in parsed.get('messages', [parsed['message']]):
+            if should_create_alarm(db, cpc['user_id'], cpc['id'], piece):
+                external_id = f"{cpc['id']}:{hash((piece+str(chunk[:48])).encode())}"
+                create_alarm(db, cpc['user_id'], cpc['id'], cpc['name'], display_site, piece, parsed['priority'], external_id=external_id)
 
 
 def send_optional(sock, hex_text: str):
@@ -461,6 +512,52 @@ def read_scan_chunks(sock, read_seconds: int = 4, idle_timeout: float = 0.8):
     return chunks
 
 
+
+
+def default_crawl_payloads():
+    return [
+        bytes([0x05]),
+        b'alarms\r\n',
+        b'alarm\r\n',
+        b'advisories\r\n',
+        b'notices\r\n',
+        b'status\r\n',
+        b'list alarms\r\n',
+    ]
+
+
+def parse_payload_lines(text: str):
+    items = []
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        hb = hex_to_bytes(line)
+        if hb:
+            items.append(hb)
+        else:
+            items.append(line.encode('utf-8', errors='ignore') + b'\r\n')
+    return items
+
+
+def get_crawl_payloads(cpc):
+    custom = parse_payload_lines(cpc['crawl_payloads'] or '')
+    return custom if custom else default_crawl_payloads()
+
+
+def perform_crawl_sequence(sock, cpc):
+    if not int(cpc['crawl_mode'] or 0):
+        return 0
+    count = 0
+    for payload in get_crawl_payloads(cpc):
+        try:
+            sock.sendall(payload)
+            count += 1
+            time.sleep(0.15)
+        except Exception:
+            continue
+    return count
+
 def perform_scan(db, cpc, source_label='manual-scan'):
     if cpc['role'] != 'client':
         raise RuntimeError('Scanning is only available in client mode.')
@@ -469,8 +566,6 @@ def perform_scan(db, cpc, source_label='manual-scan'):
     timeout = int(cpc['timeout'])
     startup_hex = cpc['startup_hex'] or ''
     scan_hex = cpc['scan_hex'] or ''
-    if not scan_hex:
-        raise RuntimeError('No scan hex configured for this CPC.')
     read_seconds = max(1, int(cpc['scan_read_seconds'] or 4))
     scanned = 0
     with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -478,10 +573,16 @@ def perform_scan(db, cpc, source_label='manual-scan'):
         update_bridge_status(cpc['id'], connected=1, last_connect_at=utc_now(), last_error='')
         send_optional(sock, startup_hex)
         time.sleep(0.2)
-        send_optional(sock, scan_hex)
+        if scan_hex.strip():
+            send_optional(sock, scan_hex)
+        else:
+            perform_crawl_sequence(sock, cpc)
         chunks = read_scan_chunks(sock, read_seconds=read_seconds)
         if not chunks:
-            save_raw_event(db, cpc['user_id'], cpc['id'], cpc['name'], f'SCAN: no bytes returned for {source_label}', 0)
+            note = f'SCAN: no bytes returned for {source_label}'
+            if not scan_hex.strip():
+                note += ' (passive listen mode)'
+            save_raw_event(db, cpc['user_id'], cpc['id'], cpc['name'], note, 0)
             return 0
         for chunk in chunks:
             increment_message_count(db, cpc['id'])
@@ -503,17 +604,36 @@ def client_bridge_loop(db, cpc, stop_event):
         sock.settimeout(1.0)
         update_bridge_status(cpc['id'], connected=1, last_connect_at=utc_now(), last_error='')
         send_optional(sock, startup_hex)
-        if cpc['auto_scan_on_connect'] and (cpc['scan_hex'] or '').strip():
+        if cpc['auto_scan_on_connect']:
             try:
                 time.sleep(0.2)
-                send_optional(sock, cpc['scan_hex'] or '')
+                if (cpc['scan_hex'] or '').strip():
+                    send_optional(sock, cpc['scan_hex'] or '')
+                else:
+                    perform_crawl_sequence(sock, cpc)
             except Exception:
                 pass
         last_hb = time.time()
+        last_scan = time.time()
+        last_crawl = time.time()
+        scan_every = max(0, int(cpc['scan_every_seconds'] or 0))
+        crawl_every = max(10, int(cpc['crawl_interval'] or 45)) if int(cpc['crawl_mode'] or 0) else 0
         while not stop_event.is_set():
             if heartbeat_hex and time.time() - last_hb >= heartbeat_interval:
                 send_optional(sock, heartbeat_hex)
                 last_hb = time.time()
+            if scan_every and (cpc['scan_hex'] or '').strip() and time.time() - last_scan >= scan_every:
+                try:
+                    send_optional(sock, cpc['scan_hex'] or '')
+                    last_scan = time.time()
+                except Exception:
+                    pass
+            if crawl_every and time.time() - last_crawl >= crawl_every:
+                try:
+                    perform_crawl_sequence(sock, cpc)
+                    last_crawl = time.time()
+                except Exception:
+                    pass
             try:
                 chunk = sock.recv(4096)
             except socket.timeout:
@@ -733,7 +853,13 @@ def dashboard():
         {'' if user['is_admin'] else 'WHERE c.user_id = ?'}
         ORDER BY c.name COLLATE NOCASE
     ''', () if user['is_admin'] else (user['id'],)).fetchall()
-    return render_template('dashboard.html', stats=stats, active=active, recent=recent, raw_recent=raw_recent, bridges=bridges, cpcs=cpcs, settings=get_settings(db))
+    site_cards = []
+    for c in cpcs:
+        active_count = db.execute("SELECT COUNT(*) AS c FROM alarms WHERE cpc_id = ? AND status = 'ACTIVE'", (c['id'],)).fetchone()['c']
+        recent_count = db.execute("SELECT COUNT(*) AS c FROM raw_events WHERE cpc_id = ?", (c['id'],)).fetchone()['c']
+        bridge = next((b for b in bridges if b['id'] == c['id']), None)
+        site_cards.append({'cpc': c, 'active_count': active_count, 'recent_count': recent_count, 'bridge': bridge})
+    return render_template('dashboard.html', stats=stats, active=active, recent=recent, raw_recent=raw_recent, bridges=bridges, cpcs=cpcs, site_cards=site_cards, settings=get_settings(db))
 
 
 @app.route('/history')
@@ -759,6 +885,20 @@ def history():
     ''', tuple(params)).fetchall()
     return render_template('history.html', alarms=alarms, status_filter=status, settings=get_settings(db))
 
+
+
+
+@app.route('/sites/<int:cpc_id>')
+@login_required
+def site_detail(cpc_id):
+    cpc, denied = owner_or_admin_required_for_cpc(cpc_id)
+    if denied:
+        return denied
+    db = get_db()
+    alarms = db.execute("SELECT * FROM alarms WHERE cpc_id = ? ORDER BY created_at DESC LIMIT 200", (cpc_id,)).fetchall()
+    raw_events = db.execute("SELECT * FROM raw_events WHERE cpc_id = ? ORDER BY created_at DESC LIMIT 50", (cpc_id,)).fetchall()
+    bridge = db.execute("SELECT * FROM bridge_status WHERE cpc_id = ?", (cpc_id,)).fetchone()
+    return render_template('site_detail.html', cpc=cpc, alarms=alarms, raw_events=raw_events, bridge=bridge, settings=get_settings(db))
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
@@ -879,6 +1019,9 @@ def add_cpc():
         flash(f'Each user can have up to {MAX_CPCS_PER_USER} CPC connections.', 'error')
         return redirect(url_for('settings'))
     name = request.form.get('name', '').strip()
+    site_label = request.form.get('site_label', '').strip()
+    store_code = request.form.get('store_code', '').strip()
+    device_notes = request.form.get('device_notes', '').strip()
     host = request.form.get('host', '').strip()
     port = int_form('port', 14106)
     timeout = int_form('timeout', 15)
@@ -890,6 +1033,7 @@ def add_cpc():
     heartbeat_interval = int_form('heartbeat_interval', 30)
     scan_hex = request.form.get('scan_hex', '').strip()
     scan_read_seconds = int_form('scan_read_seconds', 4)
+    scan_every_seconds = int_form('scan_every_seconds', 0)
     auto_scan_on_connect = 1 if request.form.get('auto_scan_on_connect') == '1' else 0
     enabled = 1 if request.form.get('enabled') == '1' else 0
     if not name:
@@ -901,8 +1045,8 @@ def add_cpc():
     if role == 'listener' and not host:
         host = '0.0.0.0'
     now = utc_now()
-    db.execute('''INSERT INTO cpcs (user_id, name, host, port, timeout, buffer_mode, parser_hint, role, startup_hex, heartbeat_hex, heartbeat_interval, scan_hex, scan_read_seconds, auto_scan_on_connect, enabled, created_at, updated_at)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (target_user_id, name, host, port, timeout, buffer_mode, parser_hint, role, startup_hex, heartbeat_hex, heartbeat_interval, scan_hex, scan_read_seconds, auto_scan_on_connect, enabled, now, now))
+    db.execute('''INSERT INTO cpcs (user_id, name, site_label, store_code, device_notes, scan_every_seconds, host, port, timeout, buffer_mode, parser_hint, role, startup_hex, heartbeat_hex, heartbeat_interval, scan_hex, scan_read_seconds, auto_scan_on_connect, crawl_mode, crawl_interval, crawl_payloads, enabled, created_at, updated_at)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (target_user_id, name, site_label, store_code, device_notes, scan_every_seconds, host, port, timeout, buffer_mode, parser_hint, role, startup_hex, heartbeat_hex, heartbeat_interval, scan_hex, scan_read_seconds, auto_scan_on_connect, 1 if request.form.get('crawl_mode', '1') == '1' else 0, int_form('crawl_interval', 45), request.form.get('crawl_payloads', '').strip(), enabled, now, now))
     db.commit()
     ensure_bridge_threads()
     flash('CPC added.', 'success')
@@ -921,8 +1065,8 @@ def update_cpc(cpc_id):
     role = request.form.get('role', 'client')
     if role == 'listener' and not host:
         host = '0.0.0.0'
-    db.execute('''UPDATE cpcs SET name=?, host=?, port=?, timeout=?, buffer_mode=?, parser_hint=?, role=?, startup_hex=?, heartbeat_hex=?, heartbeat_interval=?, enabled=?, updated_at=? WHERE id=?''',
-               (request.form.get('name', '').strip(), host, int_form('port', 14106), int_form('timeout', 15), request.form.get('buffer_mode', 'fsd'), request.form.get('parser_hint', 'fsd_auto'), role, request.form.get('startup_hex', '').strip(), request.form.get('heartbeat_hex', '').strip(), int_form('heartbeat_interval', 30), 1 if request.form.get('enabled') == '1' else 0, now, cpc_id))
+    db.execute('''UPDATE cpcs SET name=?, site_label=?, store_code=?, device_notes=?, scan_every_seconds=?, host=?, port=?, timeout=?, buffer_mode=?, parser_hint=?, role=?, startup_hex=?, heartbeat_hex=?, heartbeat_interval=?, scan_hex=?, scan_read_seconds=?, auto_scan_on_connect=?, crawl_mode=?, crawl_interval=?, crawl_payloads=?, enabled=?, updated_at=? WHERE id=?''',
+               (request.form.get('name', '').strip(), request.form.get('site_label', '').strip(), request.form.get('store_code', '').strip(), request.form.get('device_notes', '').strip(), int_form('scan_every_seconds', 0), host, int_form('port', 14106), int_form('timeout', 15), request.form.get('buffer_mode', 'fsd'), request.form.get('parser_hint', 'fsd_auto'), role, request.form.get('startup_hex', '').strip(), request.form.get('heartbeat_hex', '').strip(), int_form('heartbeat_interval', 30), request.form.get('scan_hex', '').strip(), int_form('scan_read_seconds', 4), 1 if request.form.get('auto_scan_on_connect') == '1' else 0, 1 if request.form.get('crawl_mode', '1') == '1' else 0, int_form('crawl_interval', 45), request.form.get('crawl_payloads', '').strip(), 1 if request.form.get('enabled') == '1' else 0, now, cpc_id))
     db.commit()
     stop_and_restart_bridge(cpc_id)
     flash('CPC updated.', 'success')

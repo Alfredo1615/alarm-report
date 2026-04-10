@@ -7,6 +7,21 @@
   <div class="stat"><span>Total</span><strong>{{ stats.total or 0 }}</strong></div>
 </section>
 
+
+<section class="card" style="margin-bottom:16px;">
+  <h2>Supervisor overview</h2>
+  <div class="stats-grid">
+    {% for item in site_cards %}
+    <div class="stat">
+      <span>{{ item['cpc']['site_label'] or item['cpc']['name'] }}</span>
+      <strong>{{ item['active_count'] }} active</strong>
+      <small>{{ 'Online' if item['bridge'] and item['bridge']['connected'] else 'Offline' }} · {{ item['recent_count'] }} raw</small>
+      <div style="margin-top:8px;"><a href="{{ url_for('site_detail', cpc_id=item['cpc']['id']) }}">Open site</a></div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
 <section class="toolbar">
   <button id="btn-test">Generate test alarm</button>
   <button id="btn-enable-notifications">Enable notifications</button>
@@ -23,13 +38,13 @@
       {% for bridge in bridges %}
       <div class="history-row">
         <div>
-          <strong>{{ bridge['name'] }}</strong>
+          <strong><a href="{{ url_for('site_detail', cpc_id=bridge['id']) }}">{{ bridge['name'] }}</a></strong>
           <p>{{ bridge['role']|upper }} · {{ bridge['host'] }}:{{ bridge['port'] }}{% if current_user['is_admin'] %} · {{ bridge['owner_username'] }}{% endif %}</p>
           <small>Messages: {{ bridge['messages_seen'] }} · Last error: {{ bridge['last_error'] or 'No error' }}</small>
         </div>
         <div class="actions-inline end">
           <form method="post" action="{{ url_for('scan_cpc', cpc_id=bridge['id']) }}">
-            <button type="submit">Scan</button>
+            <button type="submit">Sync now</button>
           </form>
           <small>{{ 'Connected' if bridge['connected'] else ('Trying' if bridge['running'] else 'Stopped') }}</small>
         </div>
@@ -137,7 +152,7 @@ async function refreshBridges() {
         <p>${(b.role || 'client').toUpperCase()} · ${b.host}:${b.port}${b.owner_username ? ' · ' + b.owner_username : ''}</p>
         <small>Messages: ${b.messages_seen || 0} · Last error: ${b.last_error || 'No error'}</small>
       </div>
-      <div class="actions-inline end"><button onclick="scanCpc(${b.id})">Scan</button><small>${b.connected ? 'Connected' : (b.running ? 'Trying' : 'Stopped')}</small></div>
+      <div class="actions-inline end"><button onclick="scanCpc(${b.id})">Sync now</button><small>${b.connected ? 'Connected' : (b.running ? 'Trying' : 'Stopped')}</small></div>
     </div>
   `).join('') : '<p>No CPC connections yet.</p>';
 }
@@ -167,7 +182,7 @@ async function enableNotifications() {
 async function scanCpc(id) {
   const res = await fetch(`/api/cpcs/${id}/scan`, {method:'POST'});
   const data = await res.json();
-  alert(data.ok ? `Scan finished. Frames: ${data.frames}` : `Scan failed: ${data.error || 'unknown error'}`);
+  alert(data.ok ? `Sync finished. Frames: ${data.frames}` : `Sync failed: ${data.error || 'unknown error'}`);
   setTimeout(() => location.reload(), 600);
 }
 
