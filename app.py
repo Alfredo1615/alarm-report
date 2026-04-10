@@ -438,31 +438,100 @@ def extract_ascii_sequences(data: bytes, min_len: int = 4):
     return [p for p in parts if len(p) >= min_len]
 
 
+def extract_utf16_sequences(data: bytes, min_len: int = 4):
+    results = []
+    for encoding in ('utf-16le', 'utf-16be'):
+        try:
+            decoded = data.decode(encoding, errors='ignore')
+        except Exception:
+            continue
+        decoded = ''.join(ch if 32 <= ord(ch) < 127 else ' ' for ch in decoded)
+        parts = [re.sub(r'\s+', ' ', p).strip() for p in re.split(r'\s{2,}', decoded)]
+        results.extend([p for p in parts if len(p) >= min_len])
+    return list(dict.fromkeys(results))
+
+
+def extract_all_text_sequences(data: bytes, min_len: int = 4):
+    parts = []
+    for seq in (extract_ascii_sequences(data, min_len=min_len) + extract_utf16_sequences(data, min_len=min_len)):
+        cleaned = re.sub(r'\s+', ' ', seq).strip()
+        if cleaned and cleaned not in parts:
+            parts.append(cleaned)
+    return parts
+
+
 def format_raw_payload(data: bytes) -> str:
-    ascii_parts = extract_ascii_sequences(data)
-    ascii_text = ' | '.join(ascii_parts[:8]) if ascii_parts else '(no printable text)'
-    return f'HEX: {bytes_to_hex(data)}\nASCII: {ascii_text}'
+    text_parts = extract_all_text_sequences(data)
+    text_preview = ' | '.join(text_parts[:12]) if text_parts else '(no printable text)'
+    return f'HEX: {bytes_to_hex(data)}\nTEXT: {text_preview}'
+
+
+def keyword_score(text: str) -> int:
+    upper = (text or '').upper()
+    score = 0
+    buckets = {
+        5: ['FAILS', 'FAILED', 'ALARM', 'ALARMS', 'NOTICE', 'NOTICES', 'ADVISORY', 'ADVISORIES', 'FAULT', 'TRIP', 'CUTOUT', 'CUT OUT'],
+        3: ['HIGH TEMP', 'LOW TEMP', 'TEMPERATURE', 'SENSOR', 'SUCTION', 'DISCHARGE', 'PRESSURE', 'POWER LOSS', 'COMPRESSOR', 'DEFROST', 'RACK', 'SYSTEM'],
+        1: ['DOOR', 'FAN', 'COND', 'CASE', 'HI ', ' LOW '],
+    }
+    for weight, words in buckets.items():
+        for word in words:
+            if word in upper:
+                score += weight
+    return score
+
+
+def clean_alarm_piece(piece: str) -> str:
+    piece = re.sub(r'\s+', ' ', piece or '').strip(' |:-')
+    piece = re.sub(r'^(FAILS|FAIL|ALARMS?|NOTICES?|ADVISORIES?)\s*[:\-]*\s*', '', piece, flags=re.I)
+    return piece[:350]
 
 
 def parse_direct_payload(raw_bytes: bytes, parser_hint: str = 'fsd_auto'):
-    ascii_parts = extract_ascii_sequences(raw_bytes)
-    joined = ' | '.join(ascii_parts[:10])
+    text_parts = extract_all_text_sequences(raw_bytes)
+    joined = ' | '.join(text_parts[:14])
     if not joined and parser_hint not in ('hex_only',):
         return None
     upper = joined.upper()
-    hot_words = ['ALARM', 'FAIL', 'FAILED', 'NOTICE', 'ADVISORY', 'TEMP', 'TEMPERATURE', 'SENSOR', 'DEFROST', 'SUCTION', 'COMP', 'COMPRESSOR', 'CASE', 'LOSS', 'DOOR', 'POWER', 'HI ', 'HIGH', 'LOW ', 'LOW', 'DISCHARGE', 'TRIP', 'FAULT', 'CUTOUT', 'CUT OUT', 'PHASE', 'PRESS', 'PRESSURE', 'COND', 'FAN', 'RACK', 'SYS', 'SYSTEM', 'OVERRIDE', 'ALR', 'NOTICES', 'ALARMS']
-    if parser_hint in ('plain', 'plain_text') and ascii_parts:
-        candidates = ascii_parts[:3]
+    section_words = ['FAILS', 'FAIL', 'ALARM', 'ALARMS', 'NOTICE', 'NOTICES', 'ADVISORY', 'ADVISORIES']
+    hot_words = section_words + ['FAILED', 'TEMP', 'TEMPERATURE', 'SENSOR', 'DEFROST', 'SUCTION', 'COMP', 'COMPRESSOR', 'CASE', 'LOSS', 'DOOR', 'POWER', 'HI ', 'HIGH', 'LOW ', 'LOW', 'DISCHARGE', 'TRIP', 'FAULT', 'CUTOUT', 'CUT OUT', 'PHASE', 'PRESS', 'PRESSURE', 'COND', 'FAN', 'RACK', 'SYS', 'SYSTEM', 'OVERRIDE', 'ALR']
+
+    candidates = []
+    if parser_hint in ('plain', 'plain_text') and text_parts:
+        candidates = text_parts[:8]
     else:
-        candidates = [p for p in ascii_parts if any(token in p.upper() for token in hot_words)]
+        for part in text_parts:
+            up = part.upper()
+            if any(token in up for token in hot_words) or keyword_score(part) >= 4:
+                candidates.append(part)
     if not candidates and any(token in upper for token in hot_words):
         candidates = [joined]
     if not candidates:
         return None
+
     pieces = []
     for cand in candidates:
-        pieces.extend(split_alarm_candidates(cand))
-    pieces = list(dict.fromkeys(pieces))[:6]
+        expanded = re.split(r'\s*(?:\||;|\\n|\\r|\s{2,}|(?:(?<=\s)|^)(?:FAILS|ALARMS?|NOTICES?|ADVISORIES?)\s*[:\-]))\s*', cand, flags=re.I)
+        if not expanded:
+            expanded = [cand]
+        for piece in expanded:
+            cleaned = clean_alarm_piece(piece)
+            if len(cleaned) < 4:
+                continue
+            up = cleaned.upper()
+            if any(token in up for token in hot_words) or keyword_score(cleaned) >= 3:
+                pieces.extend(split_alarm_candidates(cleaned))
+
+    normalized = []
+    for piece in pieces:
+        cleaned = clean_alarm_piece(piece)
+        if not cleaned:
+            continue
+        if cleaned.upper() in {'FAILS', 'ALARMS', 'ALARM', 'NOTICES', 'NOTICE', 'ADVISORIES', 'ADVISORY'}:
+            continue
+        if cleaned not in normalized:
+            normalized.append(cleaned)
+    pieces = normalized[:12]
     if not pieces:
         return None
     priority = 'HIGH' if any(x in upper for x in ['ALARM', 'FAIL', 'FAILED', 'CRIT', 'CRITICAL', 'HIGH TEMP', 'LOSS', 'POWER', 'FAULT', 'TRIP', 'CUTOUT']) else 'MEDIUM'
@@ -517,12 +586,19 @@ def read_scan_chunks(sock, read_seconds: int = 4, idle_timeout: float = 0.8):
 def default_crawl_payloads():
     return [
         bytes([0x05]),
+        b'fails\r\n',
+        b'fail\r\n',
         b'alarms\r\n',
         b'alarm\r\n',
-        b'advisories\r\n',
         b'notices\r\n',
+        b'notice\r\n',
+        b'advisories\r\n',
+        b'advisory\r\n',
         b'status\r\n',
         b'list alarms\r\n',
+        b'show alarms\r\n',
+        b'show fails\r\n',
+        b'show notices\r\n',
     ]
 
 
