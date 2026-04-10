@@ -487,6 +487,27 @@ def clean_alarm_piece(piece: str) -> str:
     return piece[:350]
 
 
+def extract_section_label_messages(text: str, labels=None):
+    labels = labels or ['FAILS', 'FAIL', 'ALARMS', 'ALARM', 'NOTICES', 'NOTICE', 'ADVISORIES', 'ADVISORY']
+    results = []
+    norm = re.sub(r'[\x00-\x1f]+', ' ', text or '')
+    label_group = '|'.join(re.escape(x) for x in labels)
+    pattern = re.compile(rf'(?P<label>{label_group})\s*[:\-]?\s*(?P<body>.*?)(?=(?:{label_group})\s*[:\-]?|$)', re.I)
+    for match in pattern.finditer(norm):
+        label = (match.group('label') or '').upper()
+        body = (match.group('body') or '').strip()
+        if not body:
+            continue
+        body = re.sub(r'\s+', ' ', body)
+        chunks = re.split(r'\s*(?:\||;|,\s+(?=[A-Z0-9]))\s*', body)
+        for chunk in chunks:
+            cleaned = clean_alarm_piece(chunk)
+            if len(cleaned) < 3:
+                continue
+            results.append(f'{label}: {cleaned}')
+    return results
+
+
 def parse_direct_payload(raw_bytes: bytes, parser_hint: str = 'fsd_auto'):
     text_parts = extract_all_text_sequences(raw_bytes)
     joined = ' | '.join(text_parts[:14])
@@ -499,6 +520,11 @@ def parse_direct_payload(raw_bytes: bytes, parser_hint: str = 'fsd_auto'):
     candidates = []
     if parser_hint in ('plain', 'plain_text') and text_parts:
         candidates = text_parts[:8]
+    elif parser_hint in ('fan_sections', 'fails_alarms_notices', 'advisory_sections'):
+        candidates = extract_section_label_messages(joined)
+        if not candidates:
+            for part in text_parts:
+                candidates.extend(extract_section_label_messages(part))
     else:
         for part in text_parts:
             up = part.upper()
@@ -511,6 +537,9 @@ def parse_direct_payload(raw_bytes: bytes, parser_hint: str = 'fsd_auto'):
 
     pieces = []
     for cand in candidates:
+        if parser_hint in ('fan_sections', 'fails_alarms_notices', 'advisory_sections') and ':' in cand:
+            pieces.append(cand)
+            continue
         expanded = re.split(r'\s*(?:\||;|\\n|\\r|\s{2,}|(?:(?<=\s)|^)(?:FAILS|ALARMS?|NOTICES?|ADVISORIES?)\s*[:\-]))\s*', cand, flags=re.I)
         if not expanded:
             expanded = [cand]

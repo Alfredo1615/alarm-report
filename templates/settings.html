@@ -107,7 +107,7 @@
       <select name="buffer_mode"><option value="fsd">FSD/Binary</option><option value="line">Line text</option><option value="block">Block text</option></select>
     </div>
     <div><label>Parser</label>
-      <select name="parser_hint"><option value="fsd_auto">FSD auto</option><option value="plain">Plain text</option></select>
+      <select name="parser_hint"><option value="fsd_auto">FSD auto</option><option value="fails_alarms_notices">Fails / Alarms / Notices</option><option value="advisory_sections">Advisories / Notices</option><option value="plain">Plain text</option><option value="hex_only">HEX only</option></select>
     </div>
     <div><label>Startup hex (optional)</label><input name="startup_hex" placeholder="010203A0"></div>
     <div><label>Heartbeat hex (optional)</label><input name="heartbeat_hex" placeholder="00FF10"></div>
@@ -152,7 +152,10 @@
           <div><label>Parser</label>
             <select name="parser_hint">
               <option value="fsd_auto" {% if cpc['parser_hint']=='fsd_auto' %}selected{% endif %}>FSD auto</option>
+              <option value="fails_alarms_notices" {% if cpc['parser_hint']=='fails_alarms_notices' %}selected{% endif %}>Fails / Alarms / Notices</option>
+              <option value="advisory_sections" {% if cpc['parser_hint']=='advisory_sections' %}selected{% endif %}>Advisories / Notices</option>
               <option value="plain" {% if cpc['parser_hint']=='plain' %}selected{% endif %}>Plain text</option>
+              <option value="hex_only" {% if cpc['parser_hint']=='hex_only' %}selected{% endif %}>HEX only</option>
             </select>
           </div>
           <div><label>Startup hex</label><input name="startup_hex" value="{{ cpc['startup_hex'] or '' }}"></div>
